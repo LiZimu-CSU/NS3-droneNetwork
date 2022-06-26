@@ -1,6 +1,0 @@
-struct NetWorkData
-{
-    string srcIP;   //  source address
-    string descIP;  //  destiantion address
-    string msg;     //  message content
-};
