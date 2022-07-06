@@ -33,6 +33,112 @@ using namespace std;
 NS_LOG_COMPONENT_DEFINE("PingEmulationExample");
 
 
+
+//下面是传输数据用的结构体，有两种数据格式，都需要监听并识别
+struct SOut2Simulator
+{
+    int copterID;
+    int vehicleType;
+    double runnedTime;
+    float VelE[3];
+    float PosE[3];
+    float AngEuler[3];
+    float AngQuatern[4];
+    float MotorRPMS[8];
+    float AccB[3];
+    float RateB[3];
+    double PosGPS[3];
+    SOut2Simulator()
+    {
+        reset();
+    }
+    void reset()
+    {
+        copterID = -1;
+        vehicleType = -1;
+        runnedTime = 0;
+        for (int i = 0; i < 3; i++)
+        {
+            VelE[i] = 0;
+        }
+        for (int i = 0; i < 3; i++)
+        {
+            PosE[i] = 0;
+        }
+        for (int i = 0; i < 3; i++)
+        {
+            AngEuler[i] = 0;
+        }
+        for (int i = 0; i < 4; i++)
+        {
+            AngQuatern[i] = 0;
+        }
+        for (int i = 0; i < 8; i++)
+        {
+            MotorRPMS[i] = 0;
+        }
+        for (int i = 0; i < 3; i++)
+        {
+            AccB[i] = 0;
+        }
+        for (int i = 0; i < 3; i++)
+        {
+            RateB[i] = 0;
+        }
+        for (int i = 0; i < 3; i++)
+        {
+            PosGPS[i] = 0;
+        }
+    }
+};
+
+#define PAYLOAD_LEN_SHORT 192
+
+typedef struct _netDataShort
+{
+    int tg;
+    int len;
+    char payload[PAYLOAD_LEN_SHORT];
+    _netDataShort()
+    {
+        memset(payload, 0, sizeof(payload));
+    }
+} netDataShort;
+
+struct SOut2SimulatorSimpleTime
+{
+    int checkSum;
+    int copterID;    // Vehicle ID
+    int vehicleType; // Vehicle type
+    float PWMs[8];
+    float PosE[3]; // NED vehicle position in earth frame (m)
+    float VelE[3];
+    float AngEuler[3]; // Vehicle Euler angle roll pitch yaw (rad) in x y z
+    double runnedTime; // Current Time stamp (ms)
+    SOut2SimulatorSimpleTime()
+    {
+        reset();
+    }
+    void reset()
+    {
+        checkSum = -1;
+        copterID = -1;
+        vehicleType = -1;
+        runnedTime = -1;
+        for (int i = 0; i < 8; i++)
+        {
+            PWMs[i] = 0;
+        }
+        for (int i = 0; i < 3; i++)
+        {
+            PosE[i] = 0;
+            AngEuler[i] = 0;
+            VelE[i] = 0;
+        }
+    }
+};
+
+
 //两个子网卡,enp3s0:0绑定192.168.31.180,enp3s0:1绑定192.168.31.
 // 180,181均为虚拟服务端,虚拟节点
 string deviceName("ens33");
@@ -57,7 +163,8 @@ struct destIPAndPort{
     uint8_t reserved[6];
 } dest_ip_port;
 map<Ipv4Address, uint16_t> IpIdMap;
-uint16_t copterID = 1;
+map<uint16_t, Ipv4Address> IdIpMap;
+uint16_t copterNumber = 0;
 
 void receivePacket(Ptr<Socket> sock);
 void receivePacketFromNx(Ptr<Socket> sock);
@@ -97,7 +204,7 @@ int main(int argc, char *argv[])
     ipv4->SetMetric(interface, 1);
     ipv4->SetUp(interface);
 
-    UdpEchoServerHelper echosever_Win(19000);
+    UdpEchoServerHelper echosever_Win(20009);
     ApplicationContainer severapp_Win;
     severapp_Win = echosever_Win.Install(receiver.Get(0));
     severapp_Win.Start(Seconds(1.0));
@@ -207,41 +314,23 @@ void receivePacketFromNx(Ptr<Socket> sock){
     Ptr<Packet> packet = sock->RecvFrom(from);
     //we need to get the source IP and port 
     InetSocketAddress sourece_address = InetSocketAddress::ConvertFrom(from);
-    // sourece_address.GetIpv4();
-    // cout << "source : " << sourece_address.GetIpv4() << "  :  "<< sourece_address.GetPort() << endl;
     packet->CopyData((uint8_t *)&dest_ip_port, 8);
     Ipv4Address temp = temp.Deserialize(dest_ip_port.ip);
-    if(!IpIdMap[sourece_address.GetIpv4()]){
-        if(int(copterID) > uav) return ;
-        IpIdMap[sourece_address.GetIpv4()] = copterID;
-        copterID++;
+
+    //This if segment is never executed!
+    if(!IpIdMap[sourece_address.GetIpv4()] || !IpIdMap[temp]){
+        cout << "map is not initialized at present!" << endl;
+        return ;
     }
-
-
-
-    // InetSocketAddress addr2 = InetSocketAddress("192.168.31.188", uint16_t(dest_ip_port.port));
-    // cout << "dest   : "<< temp.Deserialize(dest_ip_port.ip) << "  : "<< uint16_t(dest_ip_port.port)<< endl;
-    //send_sock->Bind(sourece_address);
-    // cout << send_sock->Connect(addr2) << endl;
-    //cout << addr2 << endl;
-    // packet->RemoveAtStart(8);
+    // cout << "recieve packet from nx"<< endl;
     TypeId tid = TypeId::LookupByName("ns3::UdpSocketFactory");
-    // InetSocketAddress dest_addr = InetSocketAddress(temp.Deserialize(dest_ip_port.ip), uint16_t(dest_ip_port.port)) ;
-    if(!IpIdMap[temp]){
-        // return ;
-        if(int(copterID) > uav) return ;
-        IpIdMap[temp] = copterID;
-        copterID++;
-    }
     Ptr<Socket> sender = Socket::CreateSocket(uavs.Get(IpIdMap[sourece_address.GetIpv4()]-1), tid);
     Ptr<Ipv4> ippp = uavs.Get(IpIdMap[temp]-1)-> GetObject<Ipv4> ();
     temp = ippp->GetAddress(1,0).GetLocal();
-    // cout << temp << endl;
     InetSocketAddress dest_addr = InetSocketAddress(temp, 20000);
     sender->Bind();
     sender->Connect(dest_addr);
     sender->Send(packet);
-    // cout <<  << endl;
     sender->Close();
 }
 
@@ -252,13 +341,20 @@ void receiveMulicastPacketFromNx(Ptr<Socket> sock){
     InetSocketAddress sourece_address = InetSocketAddress::ConvertFrom(from);
     packet->CopyData((uint8_t *)&dest_ip_port, 16);
     packet->RemoveAtStart(16);
+//construct the IPIDMap and IDIPMap here
+
+    if(!IpIdMap[sourece_address.GetIpv4()]){
+        IpIdMap[sourece_address.GetIpv4()] = dest_ip_port.copterID;
+        IdIpMap[dest_ip_port.copterID] = sourece_address.GetIpv4();
+    }
+
+
+
     Ipv4Address temp;
     temp = temp.Deserialize(dest_ip_port.ip);
     TypeId tid = TypeId::LookupByName("ns3::UdpSocketFactory");
     Ptr<Socket> sender = Socket::CreateSocket(receiver.Get(0), tid);
     InetSocketAddress dest_addr = InetSocketAddress("255.255.255.255", dest_ip_port.port);
-    // InetSocketAddress source_addr_in_ns3 = InetSocketAddress(ippp->GetAddress(1,0).GetLocal(), 10000);
-    // cout << "source : " << sourece_address.GetIpv4() <<"  : " << sourece_address.GetPort() <<'\n';
     sender->SetAllowBroadcast(true);
     sender->Bind(sourece_address);
     sender->Connect(dest_addr);
@@ -267,53 +363,58 @@ void receiveMulicastPacketFromNx(Ptr<Socket> sock){
 }
 
 
-void ReceiveWin(Ptr<Node> nodelist[], int uavNum, string context, const Ptr<const Packet> packet)
+
+void ReceiveWin(Ptr<Node> nodelist[], int nodes_num, string context, const Ptr<const Packet> packet)
 {
-    //cout << "received*******************" << endl;
-    //return ;
-    //haven't deconde the packet to get the locations of the uavs.
-    //uint8_t copterID[8];
-    packet->CopyData((uint8_t *)&dest_ip_port, 8);
-    // for(int i=0; i<4; i++){
-    //     cout << int(dest_ip_port.ip[i]) <<".";
-    // }
-    // cout << "  :   "  << dest_ip_port.port << endl;
+    //这里是接收所有飞机位置的监听函数
+    //下面是解析Windows发送的UDP消息的代码
+    int num = packet->GetSize();
+    // uint8* RecvData = packet.GetData;
 
-
-    // TypeId tid = TypeId::LookupByName("ns3::UdpSocketFactory");
-    // Ptr<Socket> send_sock = Socket::CreateSocket(nodelist[source], tid);
-    // InetSocketAddress addr = InetSocketAddress(nodelist[dest]
-    //         ->GetObject<Ipv4>()->GetAddress(1,0).GetLocal(), 10000);
-    // send_sock->Connect(addr);
-    // Ptr<Packet> p = packet->Copy();
-    // send_sock->Send(p);
-
-    Ptr<Packet> packet1 = packet->Copy();
-    cout << packet1->ToString() << endl;
-
-    // PppHeader ppp ;
-    // // packet1->RemoveHeader(ppp);
-    // Ipv4Header ip;
-    // packet1->RemoveHeader(ip);
-    // cout << "Source IP:  " << ip.GetSource() <<endl;
-
-
-
-    // cout << "reveived  " << receivenum++<< endl;
-    // uint8_t data[11];
-    // packet->CopyData((uint8_t *)&data, 11);
-    // cout << data[0] << endl;
-    // for(int i=0; i<11; i++){
-    //     cout << char(data[i]);
-    // }
-    // cout << endl;
-
-    // TypeId tid = TypeId::LookupByName("ns3::UdpSocketFactory");
-    // Ptr<Socket> send_sock = Socket::CreateSocket(nodelist[0], tid);
-    // InetSocketAddress addr = InetSocketAddress(Ipv4Address("192.168.31.71"), 30005);
-    // send_sock->Connect(addr);
-    // uint8_t datap[sizeof(packet)];
-    // packet->CopyData(datap,sizeof(datap));
-    // Ptr< Packet> p =Create<Packet>(datap,sizeof(datap));
-    // send_sock->Send(p);
+    // uint8_t *buffer = new uint8_t[packet->GetSize()];
+    // packet->CopyData(buffer, packet->GetSize());
+    //解析SOut2Simulator的数据包
+    if (num == sizeof(netDataShort))
+    {
+        // cout << "success to receive WIN" << endl;
+        receivenum++;
+        // receivetime = Simulator::Now();
+        netDataShort data;
+        packet->CopyData((uint8_t *)&data, packet->GetSize());
+        // memcpy(&data, RecvData, ArrayReader->Num());
+        SOut2Simulator data3d;
+        if (data.len == sizeof(data3d))
+        {
+            memcpy(&data3d, data.payload, data.len);
+            int CopterID = data3d.copterID;
+            if (CopterID > 0 && CopterID <= nodes_num)
+            {
+                //首先判断收到的CopterID是否已创建节点，如果没有则跳过
+                Ptr<ConstantVelocityMobilityModel> mob = nodelist[CopterID - 1]->GetObject<ConstantVelocityMobilityModel>(); //获取CopterID对应的Nodes，例如1号飞机对应Node.get(0)
+                mob->SetVelocity(Vector(data3d.VelE[0], data3d.VelE[1], 0));
+                mob->SetPosition(Vector(data3d.PosE[0], data3d.PosE[1], 0));
+                // Mobilitychange(mob, data3d.VelE[0], data3d.VelE[1], data3d.VelE[2], data3d.PosE[0], data3d.PosE[1], data3d.PosE[2]); //配置CopterID号飞机的位置，注意Z轴调整为向上为正
+            }
+        }
+        return;
+    }
+    if (num == sizeof(SOut2SimulatorSimpleTime))
+    {
+        struct SOut2SimulatorSimpleTime data3d;
+        // memcpy(&data3d, RecvData, ArrayReader->Num());
+        packet->CopyData((uint8_t *)&data3d, packet->GetSize());
+        if (data3d.checkSum == 1234567890)
+        {
+            int CopterID = data3d.copterID;
+            if (CopterID > 0 && CopterID <= nodes_num)
+            {                                                                                                                //首先判断收到的CopterID是否已创建节点，如果没有则跳过
+                Ptr<ConstantVelocityMobilityModel> mob = nodelist[CopterID - 1]->GetObject<ConstantVelocityMobilityModel>(); //获取CopterID对应的Nodes，例如1号飞机对应Node.get(0)
+                mob->SetVelocity(Vector(data3d.VelE[0], data3d.VelE[1], 0));
+                mob->SetPosition(Vector(data3d.PosE[0], data3d.PosE[1], 0));
+                // Mobilitychange(mob, data3d.VelE[0], data3d.VelE[1], -data3d.VelE[2], data3d.PosE[0], data3d.PosE[1], -data3d.PosE[2]); //配置CopterID号飞机的位置，注意Z轴调整为向上为正
+                cout << "Receive SOut2SimulatorSimpleTime data" << data3d.VelE[0] << data3d.VelE[1] << -data3d.VelE[2] << data3d.PosE[0] << data3d.PosE[1] << -data3d.PosE[2] << endl;
+            }
+            return;
+        }
+    }
 }
